@@ -31,9 +31,10 @@ namespace TCore.WebControl
 				options.AddArguments("--window-size=1920,1080");
 				options.AddArguments("--start-maximized");
 				options.AddArgument("--headless");
-				options.AddArgument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36");
 				service.HideCommandPromptWindow = true;
 			}
+			
+			options.AddArgument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36");
 
 			DownloadPath = $"{Environment.GetEnvironmentVariable("TEMP")}\\arb-{Guid.NewGuid().ToString()}";
 			Directory.CreateDirectory(DownloadPath);
@@ -41,8 +42,11 @@ namespace TCore.WebControl
 			options.AddUserProfilePreference("download.prompt_for_download", false);
 			options.AddUserProfilePreference("download.default_directory", DownloadPath);
 
+			// Dear future self: When you get an exception here because the cromedriver doesn't match chrome, go to https://chromedriver.chromium.org/downloads
 			Driver = new ChromeDriver(service, options);
-		}
+            Driver.Manage().Timeouts().PageLoad = TimeSpan.FromMinutes(10.0);
+            Driver.Manage().Timeouts().AsynchronousJavaScript = TimeSpan.FromMinutes(10.0);
+        }
 
 		#region Page Navigation
 
@@ -151,7 +155,7 @@ namespace TCore.WebControl
 		public void WaitForPageLoad(int maxWaitTimeInSeconds = 500) => WaitForPageLoad(m_iStatusReporter, Driver, maxWaitTimeInSeconds);
 
 		public delegate bool WaitDelegate(IWebDriver driver);
-
+		
 		public void WaitForCondition(WaitDelegate waitDelegate, int msecTimeout = 500)
 		{
 			WebDriverWait wait = new WebDriverWait(Driver, TimeSpan.FromMilliseconds(msecTimeout));
@@ -169,7 +173,7 @@ namespace TCore.WebControl
 					}
 				});
 		}
-
+		
 		public void WaitForCondition(System.Func<OpenQA.Selenium.IWebDriver, OpenQA.Selenium.IWebElement> until, int msecTimeout = 500)
 		{
 			WebDriverWait wait = new WebDriverWait(Driver, TimeSpan.FromMilliseconds(msecTimeout));
@@ -208,12 +212,23 @@ namespace TCore.WebControl
 		----------------------------------------------------------------------------*/
 		private static bool FClickControl(IStatusReporter srpt, IWebDriver driver, IWebElement element, string sidWaitFor = null)
 		{
-			element?.Click();
+            try
+            {
+                element?.Click();
+            }
+            catch (OpenQA.Selenium.WebDriverException e)
+            {
+                srpt.AddMessage($"Ignoring webdriver exception: {e.Message}");
+            }
+            catch (Exception e)
+            {
+                throw e;
+            }
 
 			if (sidWaitFor != null)
 				return WaitForControl(driver, srpt, sidWaitFor);
 
-			WaitForPageLoad(srpt, driver, 2000);
+			WaitForPageLoad(srpt, driver, 12000);
 			return true;
 		}
 
@@ -341,7 +356,53 @@ namespace TCore.WebControl
 		}
 
 		public bool FSetTextAreaTextForControlName(string sName, string sValue, bool fCheck) => FSetTextAreaTextForControlName(Driver, sName, sValue, fCheck);
+		public bool FSetTextAreaTextForControlAsChildOfDivId(string sDivId, string sValue, bool fCheck) => FSetTextAreaTextForControlAsChildOfDivId(Driver, sDivId, sValue, fCheck);
 
+		public static bool FSetTextAreaTextForControlAsChildOfDivId(IWebDriver driver, string sDivId, string sValue, bool fCheck)
+        {
+            IWebElement div = driver.FindElement(By.Id(sDivId));
+
+			// and now get the first child
+            IWebElement element = div.FindElement(By.TagName("textarea"));
+
+            string sOriginal = null;
+
+            if (fCheck)
+                sOriginal = element.GetAttribute("value");
+
+            element.Clear();
+            element.SendKeys(sValue);
+
+            if (fCheck)
+                return String.Compare(sValue, sOriginal, true) != 0;
+
+            return true;
+		}
+
+		public static bool FClickSubmitControlByValue(IWebDriver driver, string sValueText)
+		{
+			string sXPath;
+
+			if (sValueText != null)
+				sXPath = $"//input[@type='submit' and @value='{sValueText}']";
+			else
+				sXPath = "//input[@type='submit']";
+
+			IWebElement element = driver.FindElement(By.XPath(sXPath));
+			if (element == null)
+				return false;
+
+			element.Click();
+			return true;
+		}
+
+		public bool FClickSubmitControlByValue(string sValueText) => FClickSubmitControlByValue(Driver, sValueText);
+
+		public string GetOuterHtmlForControlByXPath(string sXPath)
+		{
+			return Driver.FindElement(By.XPath(sXPath)).GetAttribute("outerHTML");
+		}
+		
 		#endregion
 
 		#region Select/Option Interaction
@@ -378,20 +439,18 @@ namespace TCore.WebControl
 		public string GetOptionTextFromOptionValueForControlName(string sName, string sOptionName) => GetOptionTextFromOptionValueForControlName(Driver, m_iStatusReporter, sName, sOptionName);
 
 		/*----------------------------------------------------------------------------
-			%%Function:FSetSelectControlText
-			%%Qualified:ArbWeb.ArbWebControl_Selenium.FSetSelectControlText
+			%%Function:FSetSelectedOptionTextForControl
+			%%Qualified:TCore.WebControl.WebControl.FSetSelectedOptionTextForControl
 		----------------------------------------------------------------------------*/
-		public static bool FSetSelectedOptionTextForControlId(IWebDriver driver, IStatusReporter srpt, string sid, string sValue)
+		public static bool FSetSelectedOptionTextForControl(IWebElement selectElement, IStatusReporter srpt, string sOptionText)
 		{
-			srpt.LogData($"FSetSelectControlText for id {sid}", 5, MSGT.Body);
-
-			SelectElement select = new SelectElement(driver.FindElement(By.Id(sid)));
+			SelectElement select = new SelectElement(selectElement);
 			string sOriginal = select.SelectedOption.Text;
 			bool fChanged = false;
 
-			if (String.Compare(sOriginal, sValue, true) != 0)
+			if (String.Compare(sOriginal, sOptionText, true) != 0)
 			{
-				select.SelectByText(sValue);
+				select.SelectByText(sOptionText);
 				fChanged = true;
 			}
 
@@ -400,7 +459,27 @@ namespace TCore.WebControl
 			return fChanged;
 		}
 
+		/*----------------------------------------------------------------------------
+			%%Function:FSetSelectControlText
+			%%Qualified:ArbWeb.ArbWebControl_Selenium.FSetSelectControlText
+		----------------------------------------------------------------------------*/
+		public static bool FSetSelectedOptionTextForControlId(IWebDriver driver, IStatusReporter srpt, string sid, string sOptionText)
+		{
+			srpt.LogData($"FSetSelectControlText for id {sid}", 5, MSGT.Body);
+
+			return FSetSelectedOptionTextForControl(driver.FindElement(By.Id(sid)), srpt, sOptionText);
+		}
+
 		public bool FSetSelectedOptionTextForControlId(string sid, string sValue) => FSetSelectedOptionTextForControlId(Driver, m_iStatusReporter, sid, sValue);
+
+		public static bool FSetSelectedOptionTextForControlName(IWebDriver driver, IStatusReporter srpt, string sName, string sOptionText)
+		{
+			srpt.LogData($"FSetSelectControlText for id {sName}", 5, MSGT.Body);
+
+			return FSetSelectedOptionTextForControl(driver.FindElement(By.Name(sName)), srpt, sOptionText);
+		}
+
+		public bool FSetSelectedOptionTextForControlName(string sName, string sOptionText) => FSetSelectedOptionTextForControlName(Driver, m_iStatusReporter, sName, sOptionText);
 
 		/*----------------------------------------------------------------------------
 			%%Function:FSetSelectControlValue
@@ -593,6 +672,19 @@ namespace TCore.WebControl
 
 		public Dictionary<string, string> GetOptionsTextValueMappingFromControlId(string sid) => GetOptionsTextValueMappingFromControlId(Driver, m_iStatusReporter, sid);
 
+		public static Dictionary<string, string> GetOptionsTextValueMappingFromControlName(IWebDriver driver, IStatusReporter srpt, string sName)
+		{
+			MicroTimer timer = new MicroTimer();
+
+			Dictionary<string, string> mp = GetOptionsTextValueMappingFromControl(driver.FindElement(By.Name(sName)), srpt);
+
+			timer.Stop();
+			srpt.LogData($"GetOptionsTextValueMappingFromControlId({sName}) elapsed: {timer.MsecFloat}", 1, MSGT.Body);
+			return mp;
+		}
+
+		public Dictionary<string, string> GetOptionsTextValueMappingFromControlName(string sName) => GetOptionsTextValueMappingFromControlName(Driver, m_iStatusReporter, sName);
+
 		/*----------------------------------------------------------------------------
 			%%Function:FResetMultiSelectOptions
 			%%Qualified:ArbWeb.ArbWebControl_Selenium.FResetMultiSelectOptions
@@ -646,8 +738,40 @@ namespace TCore.WebControl
 			public delegate void StartDownload();
 
 			private readonly string m_sExpectedFullName;
+			private readonly string[] m_expectedFullNameTemplates;
+
 			private readonly string m_sTargetFile;
 			private StartDownload m_startDownload;
+
+			public FileDownloader(WebControl webControl, string[] expectedFileTemplates, string targetFile, StartDownload startDownload)
+			{
+				m_expectedFullNameTemplates = new string[expectedFileTemplates.Length];
+
+				for (int i = 0; i < expectedFileTemplates.Length; i++)
+					m_expectedFullNameTemplates[i] = Path.Combine(webControl.DownloadPath, expectedFileTemplates[i]);
+
+				if (targetFile == null)
+				{
+					m_sTargetFile = Path.Combine(
+						webControl.DownloadPath,
+						$"{System.Guid.NewGuid().ToString()}.{Path.GetExtension(expectedFileTemplates[0])}");
+				}
+				else
+				{
+					m_sTargetFile = targetFile;
+				}
+
+				// make sure that file doesn't already exist
+				string sFile = GetDownloadedFileFromTemplates();
+
+				if (sFile != null)
+				{
+					throw new Exception(
+						$"File {sFile} already exists! our temp download directory should start out empty! Someone not cleaning up?");
+				}
+
+				m_startDownload = startDownload;
+			}
 
 			public FileDownloader(WebControl webControl, string expectedFile, string targetFile, StartDownload startDownload)
 			{
@@ -673,18 +797,50 @@ namespace TCore.WebControl
 				m_startDownload = startDownload;
 			}
 
+			string GetDownloadedFileFromTemplates()
+			{
+				if (m_expectedFullNameTemplates == null)
+				{
+					if (File.Exists(m_sExpectedFullName))
+						return m_sExpectedFullName;
+
+					return null;
+				}
+
+				int c = 0;
+
+				while (c < 50)
+				{
+					foreach (string s in m_expectedFullNameTemplates)
+					{
+						string sFull = String.Format(s, c);
+						if (File.Exists(sFull))
+							return sFull;
+					}
+
+					c++;
+				}
+
+				return null;
+			}
+
 			public string GetDownloadedFile()
 			{
+				string sFile = null;
+
 				m_startDownload();
 
 				// now wait for the file to be available and non-zero
-				int cRetry = 100;
+				int cRetry = 500;
 				while (--cRetry > 0)
 				{
 					Thread.Sleep(100);
-					if (File.Exists(m_sExpectedFullName))
+
+					sFile = GetDownloadedFileFromTemplates();
+
+					if (sFile != null)
 					{
-						FileInfo info = new FileInfo(m_sExpectedFullName);
+						FileInfo info = new FileInfo(sFile);
 
 						if (info.Length > 0)
 							break;
@@ -694,7 +850,7 @@ namespace TCore.WebControl
 				if (cRetry <= 0)
 					throw new Exception("file never downloaded?");
 
-				File.Move(m_sExpectedFullName, m_sTargetFile);
+				File.Move(sFile, m_sTargetFile);
 				return m_sTargetFile;
 			}
 		}
