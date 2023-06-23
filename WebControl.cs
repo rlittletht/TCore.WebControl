@@ -267,11 +267,18 @@ namespace TCore.WebControl
 
 			string sOriginalValue = fCheck ? element.GetProperty("value") : null;
 
-			element.Clear();
-			element.SendKeys(sValue);
+            try
+            {
+                element.Clear();
+                element.SendKeys(sValue);
+            }
+            catch (Exception e)
+            {
+                return false;
+            }
 
 
-			if (fCheck)
+            if (fCheck)
 				return String.Compare(sOriginalValue, sValue) != 0;
 
 			return !fCheck;
